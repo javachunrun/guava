@@ -46,7 +46,6 @@ import static com.google.common.util.concurrent.TestPlatform.clearInterrupt;
 import static com.google.common.util.concurrent.TestPlatform.getDoneFromTimeoutOverload;
 import static com.google.common.util.concurrent.Uninterruptibles.awaitUninterruptibly;
 import static com.google.common.util.concurrent.Uninterruptibles.getUninterruptibly;
-import static java.lang.Thread.currentThread;
 import static java.util.Arrays.asList;
 import static java.util.concurrent.Executors.newSingleThreadExecutor;
 import static java.util.concurrent.Executors.newSingleThreadScheduledExecutor;
@@ -2802,6 +2801,35 @@ public class FuturesTest extends TestCase {
     }
   }
 
+  @AndroidIncompatible
+  @GwtIncompatible
+  public void testWhenAllSucceed_releasesMemory() throws Exception {
+    SettableFuture<Long> future1 = SettableFuture.create();
+    SettableFuture<Long> future2 = SettableFuture.create();
+    WeakReference<SettableFuture<Long>> future1Ref = new WeakReference<>(future1);
+    WeakReference<SettableFuture<Long>> future2Ref = new WeakReference<>(future2);
+
+    AsyncCallable<Long> combiner =
+        new AsyncCallable<Long>() {
+          @Override
+          public ListenableFuture<Long> call() throws Exception {
+            return SettableFuture.create();
+          }
+        };
+
+    ListenableFuture<Long> unused =
+        whenAllSucceed(future1, future2).callAsync(combiner, directExecutor());
+
+    future1.set(1L);
+    future1 = null;
+    future2.set(2L);
+    future2 = null;
+
+    // Futures should be collected even if combiner future never finishes.
+    GcFinalization.awaitClear(future1Ref);
+    GcFinalization.awaitClear(future2Ref);
+  }
+
   /*
    * TODO(cpovirk): maybe pass around TestFuture instances instead of
    * ListenableFuture instances
@@ -3716,6 +3744,10 @@ public class FuturesTest extends TestCase {
 
   // Simulate a timeout that fires before the call the SES.schedule returns but the future is
   // already completed.
+
+  // This test covers a bug where an Error thrown from a callback could cause the TimeoutFuture to
+  // never complete when timing out.  Notably, nothing would get logged since the Error would get
+  // stuck in the ScheduledFuture inside of TimeoutFuture and nothing ever calls get on it.
 
   private static final Executor REJECTING_EXECUTOR =
       new Executor() {
